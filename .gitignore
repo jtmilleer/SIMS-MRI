@@ -1,4 +1,5 @@
 .DS_Store
+CLAUDE.md
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -198,5 +199,10 @@ cython_debug/
 
 # Experiment outputs
 mlruns/
+
+# Local datasets
+brats-data/
 runs/
 preprocessed_data/
+oasis_random/
+nnunet_data/

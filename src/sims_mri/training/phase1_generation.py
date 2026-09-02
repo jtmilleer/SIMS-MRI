@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import yaml
-from sklearn.preprocessing import MinMaxScaler
+from sims_mri.utils import rescale_for_nifti
 from torch.utils.data import DataLoader
 
 from IDIR.networks import networks
@@ -591,6 +591,7 @@ def main(args):
             (data1, label1) = d1
             (data2, label2) = d2
 
+            # Excludes both padding and background (both are -1 after normalization)
             contrast1_mask = label1[:, 0] != -1.0
             contrast1_labels = label1[contrast1_mask, 0]
             contrast1_labels = contrast1_labels.reshape(-1, 1).to(device=device)
@@ -717,9 +718,15 @@ def main(args):
 
         print("Generating NIFTIs for contrast1")
         (x_dim, y_dim, z_dim) = out_dim_xyz1
-        scaler = MinMaxScaler()
+        skull_stripped = getattr(config.DATASET, "SKULL_STRIPPED", False)
+        intensity_min, intensity_max = dataset.get_intensity_minmax()
         label_arr = np.array(out_image1, dtype=np.float32)
-        model_intensities_contrast1 = scaler.fit_transform(label_arr.reshape(-1, 1))
+        model_intensities_contrast1 = rescale_for_nifti(
+            label_arr, skull_stripped, intensity_min, intensity_max
+        )
+        if skull_stripped:
+            fg_mask = dataset.get_foreground_mask1().numpy()
+            model_intensities_contrast1[~fg_mask.reshape(-1, 1)] = 0.0
         img_contrast1 = model_intensities_contrast1.reshape(
             (x_dim, y_dim, z_dim)
         )

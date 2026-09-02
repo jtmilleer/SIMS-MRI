@@ -18,6 +18,14 @@ RESAMPLING_FACTORS = {
 }
 
 
+def scan_id_from_path(path_like) -> str:
+    """Return the canonical scan id from a NIfTI filename."""
+    name = Path(path_like).name
+    if name.endswith(".nii.gz"):
+        return name[:-7]
+    return Path(path_like).stem
+
+
 def resample_nib(img, voxel_spacing=(1, 1, 1), order=3):
     """Resample a NIfTI image to the given voxel spacing."""
     aff = img.affine
@@ -51,15 +59,16 @@ def resample_and_save(input_file, output_file, view):
 
 
 def preprocess_oasis_subject(input_fname, subject_id, output_root=Path("oasis_random")):
-    subject_output_dir = output_root / subject_id
+    scan_id = scan_id_from_path(input_fname)
+    subject_output_dir = output_root / scan_id
     subject_output_dir.mkdir(parents=True, exist_ok=True)
-    fname = Path(input_fname).name
+    fname = f"{scan_id}.nii.gz"
     output_base = subject_output_dir / fname
     print(f"[*] Preprocessing {fname}")
     shutil.copyfile(input_fname, output_base)
 
-    # Axial and coronal LR views
-    for view in ["axial", "coronal"]:
+    # Axial, coronal, and sagittal LR views from the original scan.
+    for view in ["axial", "coronal", "sagittal"]:
         output_fname = str(output_base).replace(".nii.gz", f"_{view}_LR.nii.gz")
         resample_and_save(input_file=str(output_base), output_file=output_fname, view=view)
 
@@ -94,12 +103,12 @@ def preprocess_oasis_subject(input_fname, subject_id, output_root=Path("oasis_ra
 
     # Per-subject RNG for reproducible random transforms
     img = nib.load(output_base)
-    rng = np.random.RandomState(hash(subject_id) % (2**31))
+    rng = np.random.RandomState(hash(scan_id) % (2**31))
     base = str(output_base)
 
     # Translation (affine shift)
     translate_vec = np.append(rng.uniform(-8, 8, size=3), 0)
-    print(f"[*] Random translation for {subject_id}: {translate_vec[:3]} mm")
+    print(f"[*] Random translation for {scan_id}: {translate_vec[:3]} mm")
     new_affine = img.affine.copy()
     new_affine[:, -1] += translate_vec
     nib.save(
@@ -118,7 +127,7 @@ def preprocess_oasis_subject(input_fname, subject_id, output_root=Path("oasis_ra
 
     # Rotation only
     theta_x = rng.uniform(-0.1, 0.1)
-    print(f"[*] Random x-axis rotation for {subject_id}: {theta_x:.6f} rad")
+    print(f"[*] Random x-axis rotation for {scan_id}: {theta_x:.6f} rad")
     rotation_mat = get_rotation_matrix_numpy(theta_x, 0.0, 0.0)
     rotated_affine = img.affine.copy().dot(rotation_mat)
     nib.save(
@@ -134,11 +143,12 @@ def preprocess_oasis_subject(input_fname, subject_id, output_root=Path("oasis_ra
         base.replace(".nii.gz", "_rigid.nii.gz"),
     )
 
-    # Coronal LR views for each transform variant
+    # Coronal and sagittal LR views for each transform variant.
     for suffix in ["_translated", "_rotated", "_translated2", "_rigid"]:
         variant_fname = base.replace(".nii.gz", f"{suffix}.nii.gz")
-        output_fname = variant_fname.replace(".nii.gz", "_coronal_LR.nii.gz")
-        resample_and_save(input_file=variant_fname, output_file=output_fname, view="coronal")
+        for view in ["coronal", "sagittal"]:
+            output_fname = variant_fname.replace(".nii.gz", f"_{view}_LR.nii.gz")
+            resample_and_save(input_file=variant_fname, output_file=output_fname, view=view)
 
     # Mean baseline from axial + coronal LR resampled
     axial_fname = base.replace(".nii.gz", "_axial_LR.nii.gz")
@@ -199,7 +209,11 @@ def main():
     for row in oasis_demo.itertuples(index=False):
         input_path = str(Path(image_dir) / row.selected_scan)
         try:
-            preprocess_oasis_subject(input_path, subject_id=row.participant_id, output_root=args.output_root)
+            preprocess_oasis_subject(
+                input_path,
+                subject_id=row.participant_id,
+                output_root=args.output_root,
+            )
         except Exception as exc:
             print(f"[!] Failed to process {row.participant_id}: {exc}")
 

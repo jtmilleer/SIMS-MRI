@@ -20,12 +20,24 @@ dependencies = [
     "lpips",
     "mlflow",
     "pandas",
+    "torch>=2.6.0,<2.7",
+    "torchvision>=0.21.0,<0.22",
 ]
 
 [project.scripts]
 sims-mri-train-phase1 = "sims_mri.training.phase1_generation:_cli"
 sims-mri-train-phase2 = "sims_mri.training.phase2_registration:_cli"
+sims-mri-train-phase2-fast-exact = "sims_mri.training.phase2_registration_fast_exact:_cli"
 sims-mri-train-phase3 = "sims_mri.training.phase3_mixed_training:_cli"
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sims_mri"]

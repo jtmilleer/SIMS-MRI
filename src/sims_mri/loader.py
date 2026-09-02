@@ -9,6 +9,20 @@ from torch.utils.data import Dataset
 from multi_contrast_inr.dataset import _BaseDataset
 from multi_contrast_inr.dataset_utils import norm_grid
 
+
+def _resolve_subject_file(image_dir: str, subject_id: str, suffix: str = "") -> str:
+	"""Resolve subject files in nested-preferred, flat-fallback layout."""
+	suffix_part = f"_{suffix}" if suffix else ""
+	nested_path = os.path.join(image_dir, subject_id, f"{subject_id}{suffix_part}.nii.gz")
+	flat_path = os.path.join(image_dir, f"{subject_id}{suffix_part}.nii.gz")
+
+	if os.path.exists(nested_path):
+		return nested_path
+	if os.path.exists(flat_path):
+		return flat_path
+	return nested_path
+
+
 def get_image_coordinate_grid_nib(image: nib.Nifti1Image):
 	img_header = image.header
 	img_data = image.get_fdata()
@@ -69,32 +83,53 @@ class MultiViewDataset(_BaseDataset):
 		)
 
 		print(self.dataset_name)
-		self.lr_contrast1 = os.path.join(self.image_dir, self.subject_id) + f'_{self.contrast1_LR_str}.nii.gz'
-		self.lr_contrast2 = os.path.join(self.image_dir, self.subject_id) + f'_{self.contrast2_LR_str}.nii.gz'
-		gt1_sep = '_' if self.contrast1_GT_str else ''
-		gt2_sep = '_' if self.contrast2_GT_str else ''
-		self.gt_contrast1 = os.path.join(self.image_dir, self.subject_id) + f'{gt1_sep}{self.contrast1_GT_str}.nii.gz'
-		self.gt_contrast2 = os.path.join(self.image_dir, self.subject_id) + f'{gt2_sep}{self.contrast2_GT_str}.nii.gz'
+		self.lr_contrast1 = _resolve_subject_file(
+			self.image_dir,
+			self.subject_id,
+			self.contrast1_LR_str,
+		)
+		self.lr_contrast2 = _resolve_subject_file(
+			self.image_dir,
+			self.subject_id,
+			self.contrast2_LR_str,
+		)
+		self.gt_contrast1 = _resolve_subject_file(
+			self.image_dir,
+			self.subject_id,
+			self.contrast1_GT_str,
+		)
+		self.gt_contrast2 = _resolve_subject_file(
+			self.image_dir,
+			self.subject_id,
+			self.contrast2_GT_str,
+		)
 
 		if os.path.isfile(self.dataset_name):
 			print("Dataset available.")
 			dataset = torch.load(self.dataset_name, weights_only=False)
-			self.data1 = dataset["data1"]
-			self.label1 = dataset["label1"]
-			self.data2 = dataset["data2"]
-			self.label2 = dataset["label2"]
-			self.affine1 = dataset["affine1"]
-			self.dim1 = dataset["dim1"]
-			self.coordinates1 = dataset["coordinates1"]
-			self.affine2 = dataset["affine2"]
-			self.dim2 = dataset["dim2"]
-			self.coordinates2 = dataset["coordinates2"]
-			self.len = dataset["len"]
-			self.gt_contrast1 = dataset["gt_contrast1"]
-			self.gt_contrast2 = dataset["gt_contrast2"]
-			self.coordinates_minmax = dataset["coordinates_minmax"]
-			print("Skipped preprocessing.")
-
+			if "intensity_min" not in dataset or "intensity_max" not in dataset:
+				print("Cache missing intensity_min/intensity_max, reprocessing...")
+				os.remove(self.dataset_name)
+				self.len = 0
+				self._process()
+			else:
+				self.data1 = dataset["data1"]
+				self.label1 = dataset["label1"]
+				self.data2 = dataset["data2"]
+				self.label2 = dataset["label2"]
+				self.affine1 = dataset["affine1"]
+				self.dim1 = dataset["dim1"]
+				self.coordinates1 = dataset["coordinates1"]
+				self.affine2 = dataset["affine2"]
+				self.dim2 = dataset["dim2"]
+				self.coordinates2 = dataset["coordinates2"]
+				self.len = dataset["len"]
+				self.gt_contrast1 = dataset["gt_contrast1"]
+				self.gt_contrast2 = dataset["gt_contrast2"]
+				self.coordinates_minmax = dataset["coordinates_minmax"]
+				self.intensity_min = dataset["intensity_min"]
+				self.intensity_max = dataset["intensity_max"]
+				print("Skipped preprocessing.")
 
 		else:
 			self.len = 0
@@ -129,6 +164,18 @@ class MultiViewDataset(_BaseDataset):
 	def get_dim2(self):
 		return self.dim2
 
+	def get_intensity_minmax(self):
+		return self.intensity_min, self.intensity_max
+
+	def get_foreground_mask1(self):
+		"""Foreground mask for contrast1 grid (True = brain, False = background/padding)."""
+		n = int(self.dim1.prod())
+		return self.label1[:n, 0] != -1.0
+
+	def get_foreground_mask2(self):
+		"""Foreground mask for contrast2 grid (True = brain, False = background/padding)."""
+		n = int(self.dim2.prod())
+		return self.label2[:n, 0] != -1.0
 
 	def get_contrast1_gt(self):
 		return self.gt_contrast1
@@ -166,6 +213,8 @@ class MultiViewDataset(_BaseDataset):
 		Imin2, Imax2 = labels_contrast2.min(), labels_contrast2.max()
 
 		min_I, max_I = np.min(np.array([Imin1, Imin2])), np.max(np.array([Imax1, Imax2]))
+		self.intensity_min = float(min_I)
+		self.intensity_max = float(max_I)
 
 		def min_max_scale(X, x_min, x_max, s_min=-1, s_max=1):
 			return (X - x_min) / (x_max - x_min) * (s_max - s_min) + s_min
@@ -173,6 +222,8 @@ class MultiViewDataset(_BaseDataset):
 		labels_contrast1 = min_max_scale(labels_contrast1, min_I, max_I)
 		labels_contrast2 = min_max_scale(labels_contrast2, min_I, max_I)
 
+		# Padding = -1, which matches normalized background (s_min=-1) for skull-stripped data.
+		# The training mask (label != -1.0) intentionally excludes both in one check.
 		data_length = np.max([len(data_contrast1),len(data_contrast2)])
 		data_template = torch.ones((data_length, 3)) * -1
 		label_template = torch.ones((data_length, 1)) * -1
@@ -216,6 +267,8 @@ class MultiViewDataset(_BaseDataset):
 			'coordinates2': self.coordinates2,
 			'gt_contrast1': self.gt_contrast1,
 			'gt_contrast2': self.gt_contrast2,
+			'intensity_min': self.intensity_min,
+			'intensity_max': self.intensity_max,
 		}
 		if not os.path.exists(os.path.join(os.getcwd(), os.path.split(self.dataset_name)[0])):
 			os.makedirs(os.path.join(os.getcwd(), os.path.split(self.dataset_name)[0]))
@@ -234,6 +287,3 @@ class InferDataset(Dataset):
 	def __getitem__(self, idx):
 		data = self.grid[idx]
 		return data
-
-
-

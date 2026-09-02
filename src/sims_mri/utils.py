@@ -1,4 +1,27 @@
 import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+
+
+def inverse_min_max_scale(X, x_min, x_max, s_min=-1.0, s_max=1.0):
+    """Invert min_max_scale: map from [s_min, s_max] back to [x_min, x_max]."""
+    return (X - s_min) / (s_max - s_min) * (x_max - x_min) + x_min
+
+
+def rescale_for_nifti(raw_output, skull_stripped, intensity_min=None, intensity_max=None):
+    """Rescale model output for NIfTI saving.
+
+    For skull-stripped data (BraTS): inverse normalization back to native scale,
+    then clip negatives to zero (background).
+    For full-head data (OASIS): MinMaxScaler to [0, 1].
+    """
+    arr = raw_output.reshape(-1, 1)
+    if skull_stripped:
+        result = inverse_min_max_scale(arr, intensity_min, intensity_max)
+        return np.clip(result, 0.0, None)
+    else:
+        scaler = MinMaxScaler()
+        return scaler.fit_transform(arr)
+
 
 def get_rotation_matrix_numpy(theta_rot_x, theta_rot_y, theta_rot_z):
     x_rot_mat = np.array([[1, 0, 0, 0],
