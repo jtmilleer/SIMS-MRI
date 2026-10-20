@@ -37,7 +37,7 @@ The checked-in example configs are under `configs/` (e.g. `configs/oasis_ngp_rig
 
 - Python 3.10
 - NVIDIA GPU with a CUDA 12.1-compatible driver recommended
-- `uv` or `conda`
+- `uv`, `conda`, or the built-in `venv` module
 
 The training scripts prefer `cuda`, then `mps`, then `cpu`.
 
@@ -62,6 +62,22 @@ uv pip install -e .
 conda env create -f environment.yml
 conda activate sims-mri
 python -c "import torch; print({'torch': torch.__version__, 'cuda': torch.version.cuda, 'cuda_available': torch.cuda.is_available()})"
+```
+
+### With venv
+
+If you don't have `uv` or `conda`, the standard library `venv` works the same way.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+
+# Install the CUDA-enabled PyTorch build first.
+pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision
+
+# Install the package in editable mode (also installs remaining dependencies).
+pip install -e .
 ```
 
 ### Clone upstream dependencies
