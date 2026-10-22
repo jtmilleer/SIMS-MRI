@@ -175,6 +175,75 @@ You can also run the modules directly:
 uv run python -m sims_mri.training.phase1_generation --help
 ```
 
+## Batch Runs on BraTS
+
+`scripts/run_brats_t1.py` runs preprocessing and Phases 1-3 over the BraTS
+2020 T1 scans, one subject at a time, passing checkpoints between phases
+automatically.
+
+### 1. Get the data
+
+Download the BraTS 2020 training data and keep the stock layout:
+
+```text
+MICCAI_BraTS2020_TrainingData/
+  BraTS20_Training_001/
+    BraTS20_Training_001_t1.nii
+    ...
+  BraTS20_Training_002/
+  ...
+```
+
+Subjects without a `<subject>_t1.nii` (or `.nii.gz`) are skipped. Each scan is
+zero-padded to a multiple of 4 per axis and run through the same preprocessing
+as OASIS (`scripts/preprocessing_brain.py`).
+
+### 2. Run the script
+
+Run from the repo root with the environment from [Setup](#setup) active:
+
+```bash
+python scripts/run_brats_t1.py   --dataset-root /path/to/MICCAI_BraTS2020_TrainingData   --output-root brats_t1
+```
+
+To try it on a couple of subjects first, add `--limit 2` or
+`--subjects BraTS20_Training_001 BraTS20_Training_002`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--dataset-root` | (required) | Folder containing the `BraTS20_Training_XXX/` folders |
+| `--output-root` | `brats_t1` | Where preprocessed data, configs and logs go |
+| `--config` | `configs/oasis_ngp_rigid.yaml` | Config copied per subject (`DIRECTORY`, `SUBJECT_ID`, `PROJECT_NAME` are filled in) |
+| `--project-name` | `brats_t1_rigid` | `PROJECT_NAME` written to each subject config |
+| `--modality` | `t1` | BraTS scan suffix to use |
+| `--subjects` | all | Only these BraTS IDs |
+| `--limit` | all | Only the first N subjects |
+| `--preprocess-only` | off | Stop after preprocessing |
+| `--skip-preprocess` | off | Reuse data that is already preprocessed |
+| `--logging` | off | Pass `--logging` (MLflow) to each phase |
+
+Subjects that are already preprocessed are not preprocessed again, but the
+phases always rerun. If a subject fails, the error is recorded and the script
+moves on to the next one.
+
+### 3. Find the outputs
+
+```text
+brats_t1/
+  BraTS20_Training_001_t1/
+    BraTS20_Training_001_t1_*_LR.nii.gz   # preprocessed views
+    config.yaml                           # per-subject config
+  logs/
+    BraTS20_Training_001_t1_phase{1,2,3}.log
+  pipeline_summary.csv   # one row per subject: status, checkpoints, outputs, error
+runs/                    # training checkpoints and reconstructions
+```
+
+`pipeline_summary.csv` lists each subject's status, Phase 1 checkpoint,
+Phase 2 checkpoint, Phase 3 output directory under `runs/`, and the error
+message if it failed. Rows are appended, so rerunning adds new rows rather than
+replacing old ones.
+
 ## Citation
 
 If you use SIMS-MRI in your work, please cite the following paper:
