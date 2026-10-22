@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import nibabel as nib
@@ -156,6 +157,37 @@ def run_pipeline(subject_id, config_path, log_dir, extra_args):
     }
 
 
+def format_duration(seconds):
+    hours, rem = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{hours}h {minutes:02d}m {secs:02d}s"
+
+
+def log_timing(runner, status, num_subjects, failed, elapsed, output_root):
+    """Append one row per run to timing_log.csv at the repo root."""
+    log_path = REPO_ROOT / "timing_log.csv"
+    write_header = not log_path.exists()
+    with open(log_path, "a", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=["finished_at", "runner", "status", "subjects", "failed",
+                           "total_seconds", "total", "per_subject", "output_root"]
+        )
+        if write_header:
+            writer.writeheader()
+        writer.writerow({
+            "finished_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "runner": runner,
+            "status": status,
+            "subjects": num_subjects,
+            "failed": failed,
+            "total_seconds": round(elapsed, 1),
+            "total": format_duration(elapsed),
+            "per_subject": format_duration(elapsed / num_subjects),
+            "output_root": str(output_root),
+        })
+    print(f"[t] Timing appended to {log_path}")
+
+
 def append_summary(summary_path, row):
     write_header = not summary_path.exists()
     with open(summary_path, "a", newline="") as f:
@@ -183,7 +215,10 @@ def main():
     parser.add_argument("--preprocess-only", action="store_true", help="Stop after preprocessing")
     parser.add_argument("--skip-preprocess", action="store_true", help="Assume data is already preprocessed")
     parser.add_argument("--logging", action="store_true", help="Enable MLflow logging in each phase")
+    parser.add_argument("-t", "--timing", action="store_true",
+                        help="Report how long each subject and the whole run took")
     args = parser.parse_args()
+    start = time.perf_counter()
 
     output_root = args.output_root.resolve()
     output_root.mkdir(parents=True, exist_ok=True)
@@ -205,23 +240,34 @@ def main():
     summary_path = output_root / "pipeline_summary.csv"
     log_dir = output_root / "logs"
 
+    failed = 0
     for subject_id, scan in subjects:
         print("=" * 60)
         print(f"[*] Subject {subject_id}")
         print("=" * 60)
+        subject_start = time.perf_counter()
         try:
             if not args.skip_preprocess:
                 preprocess_subject(subject_id, scan, output_root)
-            if args.preprocess_only:
-                continue
-            config_path = write_subject_config(base_config, subject_id, output_root, args.project_name)
-            result = run_pipeline(subject_id, config_path, log_dir, extra_args)
-            append_summary(summary_path, {**result, "status": "ok", "error": ""})
+            if not args.preprocess_only:
+                config_path = write_subject_config(base_config, subject_id, output_root, args.project_name)
+                result = run_pipeline(subject_id, config_path, log_dir, extra_args)
+                append_summary(summary_path, {**result, "status": "ok", "error": ""})
         except Exception as exc:
+            failed += 1
             print(f"[!] {subject_id} failed: {exc}")
             append_summary(summary_path, {"subject_id": subject_id, "status": "failed", "error": str(exc)})
+        if args.timing:
+            print(f"[t] {subject_id} took {format_duration(time.perf_counter() - subject_start)}")
 
     print(f"[*] Done. Summary: {summary_path}")
+    if args.timing:
+        elapsed = time.perf_counter() - start
+        print(
+            f"[t] {len(subjects)} subject(s) ({len(subjects) - failed} ok, {failed} failed) "
+            f"in {format_duration(elapsed)} ({format_duration(elapsed / len(subjects))} per subject)"
+        )
+        log_timing("serial", "ok" if failed == 0 else "errors", len(subjects), failed, elapsed, output_root)
 
 
 if __name__ == "__main__":

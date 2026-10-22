@@ -200,3 +200,5 @@ cython_debug/
 mlruns/
 runs/
 preprocessed_data/
+.snakemake/
+timing_log.csv
