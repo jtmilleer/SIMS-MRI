@@ -97,12 +97,12 @@ onerror:
 
 rule all:
     input:
-        f"{OUT}/summary.csv",
+        OUT + "/summary.csv",
 
 
 rule preprocess:
     output:
-        f"{OUT}/{{subject}}/{{subject}}_rigid_coronal_LR.nii.gz",
+        OUT + "/{subject}/{subject}_rigid_coronal_LR.nii.gz",
     run:
         preprocess_subject(wildcards.subject, SCANS[wildcards.subject], OUT_ROOT)
 
@@ -111,7 +111,7 @@ rule subject_config:
     input:
         rules.preprocess.output,
     output:
-        f"{OUT}/{{subject}}/config.yaml",
+        OUT + "/{subject}/config.yaml",
     run:
         write_subject_config(BASE_CONFIG, wildcards.subject, OUT_ROOT, config["project_name"])
 
@@ -121,9 +121,9 @@ rule phase1:
     input:
         cfg=rules.subject_config.output[0],
     output:
-        f"{OUT}/{{subject}}/phase1.json",
+        OUT + "/{subject}/phase1.json",
     log:
-        f"{OUT}/logs/{{subject}}_phase1.log",
+        OUT + "/logs/{subject}_phase1.log",
     resources:
         phase1_slot=1,
     priority: 1
@@ -140,9 +140,9 @@ rule phase2:
         cfg=rules.subject_config.output[0],
         phase1=rules.phase1.output[0],
     output:
-        f"{OUT}/{{subject}}/phase2.json",
+        OUT + "/{subject}/phase2.json",
     log:
-        f"{OUT}/logs/{{subject}}_phase2.log",
+        OUT + "/logs/{subject}_phase2.log",
     resources:
         phase2_slot=1,
     priority: 2
@@ -171,9 +171,9 @@ rule phase3:
         phase1=rules.phase1.output[0],
         phase2=rules.phase2.output[0],
     output:
-        f"{OUT}/{{subject}}/phase3.json",
+        OUT + "/{subject}/phase3.json",
     log:
-        f"{OUT}/logs/{{subject}}_phase3.log",
+        OUT + "/logs/{subject}_phase3.log",
     resources:
         phase3_slot=1,
     priority: 3
@@ -193,11 +193,11 @@ rule phase3:
 
 rule summary:
     input:
-        phase1=expand(f"{OUT}/{{subject}}/phase1.json", subject=SCANS),
-        phase2=expand(f"{OUT}/{{subject}}/phase2.json", subject=SCANS),
-        phase3=expand(f"{OUT}/{{subject}}/phase3.json", subject=SCANS),
+        phase1=expand(OUT + "/{subject}/phase1.json", subject=SCANS),
+        phase2=expand(OUT + "/{subject}/phase2.json", subject=SCANS),
+        phase3=expand(OUT + "/{subject}/phase3.json", subject=SCANS),
     output:
-        f"{OUT}/summary.csv",
+        OUT + "/summary.csv",
     run:
         with open(output[0], "w", newline="") as f:
             writer = csv.DictWriter(
