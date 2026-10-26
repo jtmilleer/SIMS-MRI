@@ -1,0 +1,213 @@
+"""Run preprocessing and SIMS-MRI Phases 1-3 on BraTS T1 scans as Snakemake steps.
+
+Each subject flows through preprocess -> phase1 -> phase2 -> phase3. Preprocessing
+is CPU-only and runs in parallel ahead of the GPU. Each phase claims its own slot
+(phase1_slot, phase2_slot, phase3_slot), so one Phase 1, one Phase 2 and one Phase 3
+job can share the GPU at once, each on a different subject. The slots, cores and
+--keep-going come from profiles/default/config.yaml, which Snakemake loads on its own:
+
+    snakemake --config dataset_root=/path/to/MICCAI_BraTS2020_TrainingData
+
+Each phase writes a small JSON marker under <output_root>/<subject>/ recording the
+checkpoint/output paths it produced under runs/, which the next phase reads.
+"""
+
+import csv
+import glob
+import json
+import sys
+import time
+from pathlib import Path
+
+import yaml
+
+START = time.perf_counter()
+
+configfile: Path(workflow.basedir) / "config.yaml"
+
+REPO_ROOT = Path(workflow.basedir).resolve().parent
+sys.path.insert(0, str(REPO_ROOT / "scripts"))
+
+from run_brats_t1 import (
+    find_subjects, format_duration, log_timing, parse_field, preprocess_subject, run_phase,
+    write_subject_config,
+)
+
+if not config.get("dataset_root"):
+    raise ValueError("Set dataset_root, e.g. snakemake --config dataset_root=/path/to/BraTS")
+
+OUT = config["output_root"]
+OUT_ROOT = Path(OUT).resolve()
+EXTRA_ARGS = ["--logging"] if config["logging"] else []
+
+base_config_path = Path(config["base_config"])
+if not base_config_path.is_absolute():
+    base_config_path = REPO_ROOT / base_config_path
+with open(base_config_path) as f:
+    BASE_CONFIG = yaml.safe_load(f)
+
+SUBJECTS = find_subjects(Path(config["dataset_root"]), config["modality"])
+if config["subjects"]:
+    wanted = set(config["subjects"])
+    SUBJECTS = [s for s in SUBJECTS if s[0].rsplit("_", 1)[0] in wanted]
+if config["limit"] is not None:
+    SUBJECTS = SUBJECTS[: int(config["limit"])]
+if not SUBJECTS:
+    raise ValueError("No subjects to process")
+SCANS = dict(SUBJECTS)
+
+wildcard_constraints:
+    subject="[^/]+",
+
+localrules: all, subject_config, summary
+
+
+def config_arg(path):
+    return ["--config", str(Path(path).resolve())]
+
+
+def load_json(path):
+    with open(path) as f:
+        return json.load(f)
+
+
+def write_json(path, data):
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def report_timing(status, outcome):
+    if config["timing"]:
+        elapsed = time.perf_counter() - START
+        print(
+            f"[t] {len(SCANS)} subject(s) {outcome} in {format_duration(elapsed)} "
+            f"({format_duration(elapsed / len(SCANS))} per subject)"
+        )
+        # Snakemake doesn't say how many subjects failed, so leave that blank
+        log_timing("snakemake", status, len(SCANS), "", elapsed, OUT_ROOT)
+
+
+onsuccess:
+    report_timing("ok", "finished")
+
+
+onerror:
+    report_timing("errors", "stopped with errors")
+
+
+rule all:
+    input:
+        f"{OUT}/summary.csv",
+
+
+rule preprocess:
+    output:
+        f"{OUT}/{{subject}}/{{subject}}_rigid_coronal_LR.nii.gz",
+    run:
+        preprocess_subject(wildcards.subject, SCANS[wildcards.subject], OUT_ROOT)
+
+
+rule subject_config:
+    input:
+        rules.preprocess.output,
+    output:
+        f"{OUT}/{{subject}}/config.yaml",
+    run:
+        write_subject_config(BASE_CONFIG, wildcards.subject, OUT_ROOT, config["project_name"])
+
+
+# Later phases get higher priority so in-flight subjects finish before new ones start.
+rule phase1:
+    input:
+        cfg=rules.subject_config.output[0],
+    output:
+        f"{OUT}/{{subject}}/phase1.json",
+    log:
+        f"{OUT}/logs/{{subject}}_phase1.log",
+    resources:
+        phase1_slot=1,
+    priority: 1
+    run:
+        lines = run_phase("phase1_generation", config_arg(input.cfg) + EXTRA_ARGS, Path(log[0]))
+        write_json(output[0], {
+            "output_dir": parse_field(lines, "Output directory"),
+            "checkpoint": str(Path(parse_field(lines, "Weights directory")) / parse_field(lines, "Saved checkpoint")),
+        })
+
+
+rule phase2:
+    input:
+        cfg=rules.subject_config.output[0],
+        phase1=rules.phase1.output[0],
+    output:
+        f"{OUT}/{{subject}}/phase2.json",
+    log:
+        f"{OUT}/logs/{{subject}}_phase2.log",
+    resources:
+        phase2_slot=1,
+    priority: 2
+    run:
+        p1 = load_json(input.phase1)
+        # Phase 2 doesn't print its checkpoint path, so diff the rotation checkpoints
+        # in the Phase 1 dir to find the one this run created
+        pattern = str(REPO_ROOT / p1["output_dir"] / "*_phase2_*" / "*_model_rotation.pt")
+        before = set(glob.glob(pattern))
+        run_phase(
+            "phase2_registration",
+            config_arg(input.cfg)
+            + ["--phase1_checkpoint", p1["checkpoint"], "--output_dir", p1["output_dir"]]
+            + EXTRA_ARGS,
+            Path(log[0]),
+        )
+        new_ckpts = sorted(set(glob.glob(pattern)) - before)
+        if not new_ckpts:
+            raise RuntimeError(f"No new Phase 2 rotation checkpoint found under {p1['output_dir']}")
+        write_json(output[0], {"checkpoint": new_ckpts[-1]})
+
+
+rule phase3:
+    input:
+        cfg=rules.subject_config.output[0],
+        phase1=rules.phase1.output[0],
+        phase2=rules.phase2.output[0],
+    output:
+        f"{OUT}/{{subject}}/phase3.json",
+    log:
+        f"{OUT}/logs/{{subject}}_phase3.log",
+    resources:
+        phase3_slot=1,
+    priority: 3
+    run:
+        p1 = load_json(input.phase1)
+        p2 = load_json(input.phase2)
+        lines = run_phase(
+            "phase3_mixed_training",
+            config_arg(input.cfg)
+            + ["--phase1_checkpoint", p1["checkpoint"], "--phase2_checkpoint", p2["checkpoint"],
+               "--output_dir", p1["output_dir"]]
+            + EXTRA_ARGS,
+            Path(log[0]),
+        )
+        write_json(output[0], {"output_dir": parse_field(lines, "Output directory")})
+
+
+rule summary:
+    input:
+        phase1=expand(f"{OUT}/{{subject}}/phase1.json", subject=SCANS),
+        phase2=expand(f"{OUT}/{{subject}}/phase2.json", subject=SCANS),
+        phase3=expand(f"{OUT}/{{subject}}/phase3.json", subject=SCANS),
+    output:
+        f"{OUT}/summary.csv",
+    run:
+        with open(output[0], "w", newline="") as f:
+            writer = csv.DictWriter(
+                f, fieldnames=["subject_id", "phase1_checkpoint", "phase2_checkpoint", "phase3_output"]
+            )
+            writer.writeheader()
+            for subject, p1, p2, p3 in zip(SCANS, input.phase1, input.phase2, input.phase3):
+                writer.writerow({
+                    "subject_id": subject,
+                    "phase1_checkpoint": load_json(p1)["checkpoint"],
+                    "phase2_checkpoint": load_json(p2)["checkpoint"],
+                    "phase3_output": load_json(p3)["output_dir"],
+                })

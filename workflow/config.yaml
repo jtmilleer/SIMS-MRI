@@ -1,0 +1,12 @@
+# Settings for workflow/Snakefile. Override any key on the command line, e.g.
+#   snakemake --config dataset_root=/data/MICCAI_BraTS2020_TrainingData limit=5
+
+dataset_root: null                    # directory containing BraTS20_Training_XXX/ folders (required)
+output_root: brats_t1                 # preprocessed subjects, configs, logs, step markers
+base_config: configs/oasis_ngp_rigid.yaml
+project_name: brats_t1_rigid
+modality: t1
+subjects: []                          # only these BraTS IDs, e.g. [BraTS20_Training_001]; empty = all
+limit: null                           # only the first N subjects
+logging: false                        # pass --logging (MLflow) to each phase
+timing: false                         # report total run time and subject count at the end

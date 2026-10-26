@@ -244,6 +244,59 @@ Phase 2 checkpoint, Phase 3 output directory under `runs/`, and the error
 message if it failed. Rows are appended, so rerunning adds new rows rather than
 replacing old ones.
 
+### Running with Snakemake
+
+`workflow/Snakefile` runs the same steps as Snakemake jobs. Preprocessing runs
+in parallel on the CPU, and the phases are pipelined on the GPU: one Phase 1,
+one Phase 2 and one Phase 3 job can run at the same time, each on a different
+subject. Finished steps are not rerun, so an interrupted run picks up where it
+left off.
+
+Snakemake is not installed with the package, so install it into the same
+environment first. Snakemake 8+ needs Python 3.11, so on the Python 3.10
+environment use the last 7.x release (newer `pulp` versions break it):
+
+```bash
+pip install "snakemake==7.32.4" "pulp<2.8"
+```
+
+Then run from the repo root:
+
+```bash
+snakemake --config dataset_root=/path/to/MICCAI_BraTS2020_TrainingData
+```
+
+Snakemake finds `workflow/Snakefile` on its own and loads the default options
+from `workflow/profiles/default/config.yaml`: 8 cores, `--keep-going`, and one
+slot per phase (`phase1_slot`, `phase2_slot`, `phase3_slot`). Edit that file, or
+override on the command line (e.g. `--cores 16`), to change them. A
+`--resources` flag replaces the profile's whole list, so pass all three slots,
+e.g. `--resources phase1_slot=2 phase2_slot=1 phase3_slot=1` to allow two
+Phase 1 jobs at once (if the GPU has the memory for it).
+
+Add `--dry-run` (`-n`) to list the jobs without running them. Settings live in
+`workflow/config.yaml`, and you can override any of them with `--config`, e.g.
+`--config dataset_root=... limit=2 timing=true`:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `dataset_root` | (required) | Folder containing the `BraTS20_Training_XXX/` folders |
+| `output_root` | `brats_t1` | Where preprocessed data, configs, logs and step markers go |
+| `base_config` | `configs/oasis_ngp_rigid.yaml` | Config copied per subject |
+| `project_name` | `brats_t1_rigid` | `PROJECT_NAME` written to each subject config |
+| `modality` | `t1` | BraTS scan suffix to use |
+| `subjects` | all | Only these BraTS IDs (edit as a list in `config.yaml`) |
+| `limit` | all | Only the first N subjects |
+| `logging` | `false` | Pass `--logging` (MLflow) to each phase |
+| `timing` | `false` | Report total run time and subject count at the end |
+
+Each phase writes a JSON marker (`phase{1,2,3}.json`) to
+`<output_root>/<subject>/` that records its checkpoint or output paths, and the
+next phase reads it. Logs go to `<output_root>/logs/`. When every subject
+finishes, `<output_root>/summary.csv` lists the checkpoints and Phase 3 output
+directory for each subject. With `--keep-going`, a failed subject doesn't stop
+the others, but `summary.csv` is only written once every subject succeeds.
+
 ## Citation
 
 If you use SIMS-MRI in your work, please cite the following paper:

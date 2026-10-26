@@ -1,0 +1,8 @@
+# Default options for workflow/Snakefile, loaded automatically by Snakemake.
+# One slot per phase lets Phases 1, 2 and 3 run at once on different subjects.
+cores: 8
+keep-going: true
+resources:
+  - phase1_slot=1
+  - phase2_slot=1
+  - phase3_slot=1
